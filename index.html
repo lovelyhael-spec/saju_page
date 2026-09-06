@@ -172,6 +172,20 @@
   .admin-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:22px}
   .admin-error{min-height:20px;margin-top:9px;color:#c56f6f;font-size:12px}
   .admin-saved{min-height:20px;margin-top:10px;text-align:right;color:#6e9b91;font-size:12px}
+  .admin-status{display:flex;align-items:center;gap:8px;font-size:12px;color:#8a746d;margin:-14px 0 22px}
+  .admin-status .dot{width:8px;height:8px;border-radius:50%;background:#d9c3bc;flex:none}
+  .admin-status.online .dot{background:#7fb8a4}
+  .admin-status.offline .dot{background:#e0a3a3}
+  .admin-logs{margin-top:26px;border-top:1px solid #f0e0da;padding-top:20px}
+  .admin-logs h4{margin:0 0 6px;font-size:14px;color:#80665d}
+  .admin-logs .hint{margin:0 0 12px}
+  .log-list{display:flex;flex-direction:column;gap:8px;max-height:220px;overflow:auto}
+  .log-item{
+    display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:#7a6862;
+    background:#fff;border:1px solid #f0e0da;border-radius:12px;padding:10px 13px;
+  }
+  .log-item .when{color:#a99a94;white-space:nowrap}
+  .log-empty{font-size:12.5px;color:#a1938e}
   @media(max-width:700px){
     .admin-grid{grid-template-columns:1fr}
     .admin-field:nth-child(7),.admin-field:nth-child(8){grid-column:auto}
@@ -308,6 +322,7 @@
       <button type="button" class="admin-close" id="adminCloseBtn" aria-label="닫기">×</button>
       <div class="admin-title">관리자 모드</div>
       <div class="admin-subtitle">홈페이지에 표시되는 문구를 직접 수정할 수 있습니다.</div>
+      <div class="admin-status" id="adminStatus"><span class="dot"></span><span id="adminStatusText">서버 연결 확인 중</span></div>
 
       <div id="adminLogin">
         <label for="adminPassword">관리자 비밀번호</label>
@@ -354,16 +369,62 @@
         </div>
 
         <div class="admin-actions">
+          <button type="button" class="admin-secondary" id="adminLogoutBtn">로그아웃</button>
           <button type="button" class="admin-secondary" id="adminResetBtn">기본 문구로 복원</button>
           <button type="button" class="admin-primary" id="adminSaveBtn">변경사항 저장</button>
         </div>
         <div class="admin-saved" id="adminSaved"></div>
+
+        <div class="admin-logs">
+          <h4>최근 풀이 기록</h4>
+          <p class="hint">방문자가 사주 풀이를 실행한 기록입니다. 최근 20건까지 보여줍니다.</p>
+          <div class="log-list" id="adminLogList">
+            <div class="log-empty">불러오는 중입니다.</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
-<script>
+<script type="module">
+/* =========================
+   Firebase 초기화
+   - 무료(Spark) 요금제 기준
+   - Cloud Storage는 사용하지 않고 Firestore에만 저장합니다.
+   ========================= */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js";
+import { getAnalytics, isSupported } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-analytics.js";
+import {
+  getFirestore, doc, getDoc, setDoc, onSnapshot,
+  collection, addDoc, query, orderBy, limit, getDocs, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore.js";
+import {
+  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/11.6.0/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBFsVvn2pGi9vkAE2tvyhHFao_kOWsko-s",
+  authDomain: "saju-page.firebaseapp.com",
+  projectId: "saju-page",
+  storageBucket: "saju-page.firebasestorage.app",
+  messagingSenderId: "579522267612",
+  appId: "1:579522267612:web:ac2361c9ed5b33170ae719",
+  measurementId: "G-ZZP545MX69"
+};
+
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+// 애널리틱스는 지원되는 환경에서만 켭니다. (file:// 로 열면 자동으로 건너뜁니다)
+isSupported().then(ok => { if(ok) getAnalytics(app); }).catch(() => {});
+
+// Firestore 경로
+const TEXTS_DOC   = doc(db, 'site', 'texts');   // 사이트 문구 1개 문서
+const LOGS_COL    = collection(db, 'logs');     // 풀이 실행 기록
+const ADMIN_EMAIL = 'admin@dohwayeoncheong.com';// 콘솔에서 만든 관리자 계정
+
 const form = document.getElementById('sajuForm');
 const result = document.getElementById('result');
 const hour = document.getElementById('hour');
@@ -525,14 +586,28 @@ form.addEventListener('submit', e => {
 
   result.classList.add('show');
   result.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  saveLog({
+    name,
+    birth,
+    calendar,
+    time: hp ? `${hour.value} ${minute.value || ''}`.trim() : '시간 모름',
+    pillars: [
+      `${yp.stem}${yp.branch}`,
+      `${mp.stem}${mp.branch}`,
+      `${dp.stem}${dp.branch}`,
+      hp ? `${hp.stem}${hp.branch}` : '-'
+    ].join(' ')
+  });
 });
 
 /* =========================
-   관리자 모드
-   비밀번호: 1234
+   관리자 모드 (Firebase Auth + Firestore)
+   - 문구는 Firestore 문서 site/texts 한 개에 저장합니다.
+   - 로그인은 Firebase Authentication(이메일/비밀번호)을 사용합니다.
    ========================= */
-const ADMIN_PASSWORD = '1234';
-const ADMIN_STORAGE_KEY = 'dohwaYeoncheongSiteTexts';
+const LOCAL_CACHE_KEY   = 'dohwaYeoncheongSiteTexts'; // 오프라인 캐시
+const FALLBACK_PASSWORD = '1234';                     // Auth 설정 전 임시 비밀번호
 
 const defaultSiteTexts = {
   siteTitle: '도화연청',
@@ -545,26 +620,56 @@ const defaultSiteTexts = {
   footer: '© DOHWA YEONCHEONG · 사주 풀이 서비스'
 };
 
-const adminOverlay = document.getElementById('adminOverlay');
-const adminOpenBtn = document.getElementById('adminOpenBtn');
-const adminCloseBtn = document.getElementById('adminCloseBtn');
-const adminPassword = document.getElementById('adminPassword');
-const adminLoginBtn = document.getElementById('adminLoginBtn');
-const adminLogin = document.getElementById('adminLogin');
-const adminPanel = document.getElementById('adminPanel');
-const adminError = document.getElementById('adminError');
-const adminSaved = document.getElementById('adminSaved');
+const adminOverlay    = document.getElementById('adminOverlay');
+const adminOpenBtn    = document.getElementById('adminOpenBtn');
+const adminCloseBtn   = document.getElementById('adminCloseBtn');
+const adminPassword   = document.getElementById('adminPassword');
+const adminLoginBtn   = document.getElementById('adminLoginBtn');
+const adminLogoutBtn  = document.getElementById('adminLogoutBtn');
+const adminLogin      = document.getElementById('adminLogin');
+const adminPanel      = document.getElementById('adminPanel');
+const adminError      = document.getElementById('adminError');
+const adminSaved      = document.getElementById('adminSaved');
+const adminStatus     = document.getElementById('adminStatus');
+const adminStatusText = document.getElementById('adminStatusText');
+const adminLogList    = document.getElementById('adminLogList');
 
-function loadSiteTexts(){
+let currentTexts  = {...defaultSiteTexts};
+let localOnlyMode = false; // Auth 설정 전 임시 모드
+
+function setStatus(state, text){
+  adminStatus.classList.remove('online','offline');
+  if(state) adminStatus.classList.add(state);
+  adminStatusText.textContent = text;
+}
+
+function escapeHtml(v){
+  return String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+/* ---- 문구 데이터 ---- */
+function pickTexts(obj){
+  const out = {};
+  Object.keys(defaultSiteTexts).forEach(k => {
+    out[k] = (obj && typeof obj[k] === 'string' && obj[k].trim()) ? obj[k] : defaultSiteTexts[k];
+  });
+  return out;
+}
+
+function loadCachedTexts(){
   try{
-    const saved = JSON.parse(localStorage.getItem(ADMIN_STORAGE_KEY) || 'null');
-    return {...defaultSiteTexts, ...(saved || {})};
+    return pickTexts(JSON.parse(localStorage.getItem(LOCAL_CACHE_KEY) || 'null'));
   }catch(e){
     return {...defaultSiteTexts};
   }
 }
 
+function cacheTexts(values){
+  try{ localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(pickTexts(values))); }catch(e){}
+}
+
 function applySiteTexts(values){
+  document.title = values.siteTitle + ' · 사주';
   document.querySelector('h1').textContent = values.siteTitle;
   document.querySelector('.subtitle').textContent = values.subtitle;
   document.querySelector('.intro h2').textContent = values.introTitle;
@@ -587,7 +692,7 @@ function fillAdminForm(values){
 }
 
 function readAdminForm(){
-  return {
+  return pickTexts({
     siteTitle: document.getElementById('editSiteTitle').value.trim(),
     subtitle: document.getElementById('editSubtitle').value.trim(),
     introTitle: document.getElementById('editIntroTitle').value.trim(),
@@ -596,18 +701,91 @@ function readAdminForm(){
     resultBadge: document.getElementById('editResultBadge').value.trim(),
     disclaimer: document.getElementById('editDisclaimer').value.trim(),
     footer: document.getElementById('editFooter').value.trim()
-  };
+  });
+}
+
+/* ---- 1) 캐시로 먼저 그리고, 2) Firestore 실시간 반영 ---- */
+currentTexts = loadCachedTexts();
+applySiteTexts(currentTexts);
+
+onSnapshot(TEXTS_DOC, snap => {
+  if(snap.exists()){
+    currentTexts = pickTexts(snap.data());
+    cacheTexts(currentTexts);
+    applySiteTexts(currentTexts);
+    if(adminPanel.style.display === 'block') fillAdminForm(currentTexts);
+  }
+  if(!localOnlyMode) setStatus('online', '클라우드에 연결되어 있습니다. 저장하면 모든 방문자에게 반영됩니다.');
+}, err => {
+  console.warn('[Firestore] 문구 구독 실패:', err);
+  setStatus('offline', '클라우드에 연결하지 못했습니다. 이 브라우저에 저장된 문구를 보여줍니다.');
+});
+
+/* ---- 풀이 기록 ---- */
+async function saveLog(entry){
+  try{
+    await addDoc(LOGS_COL, {
+      name: String(entry.name || '').slice(0,30),
+      birth: String(entry.birth || '').slice(0,20),
+      calendar: String(entry.calendar || '').slice(0,10),
+      time: String(entry.time || '').slice(0,20),
+      pillars: String(entry.pillars || '').slice(0,40),
+      createdAt: serverTimestamp()
+    });
+  }catch(e){
+    console.warn('[Firestore] 기록 저장 실패:', e); // 저장 실패해도 풀이 화면은 그대로 보입니다.
+  }
+}
+
+async function loadLogs(){
+  if(!auth.currentUser){
+    adminLogList.innerHTML = '<div class="log-empty">관리자 계정으로 로그인하면 기록을 볼 수 있습니다.</div>';
+    return;
+  }
+  adminLogList.innerHTML = '<div class="log-empty">불러오는 중입니다.</div>';
+  try{
+    const snap = await getDocs(query(LOGS_COL, orderBy('createdAt','desc'), limit(20)));
+    if(snap.empty){
+      adminLogList.innerHTML = '<div class="log-empty">아직 기록이 없습니다.</div>';
+      return;
+    }
+    adminLogList.innerHTML = snap.docs.map(d => {
+      const v = d.data();
+      const t = v.createdAt && v.createdAt.toDate ? v.createdAt.toDate() : null;
+      const when = t
+        ? `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`
+        : '방금';
+      return `<div class="log-item">
+        <span>${escapeHtml(v.name)} · ${escapeHtml(v.birth)} ${escapeHtml(v.calendar)} · ${escapeHtml(v.time)}</span>
+        <span class="when">${when}</span>
+      </div>`;
+    }).join('');
+  }catch(e){
+    adminLogList.innerHTML = `<div class="log-empty">기록을 불러오지 못했습니다. (${escapeHtml(e.code || e.message)})</div>`;
+  }
+}
+
+/* ---- 모달 열고 닫기 ---- */
+function openPanel(){
+  adminLogin.style.display = 'none';
+  adminPanel.style.display = 'block';
+  fillAdminForm(currentTexts);
+  loadLogs();
 }
 
 function openAdmin(){
   adminOverlay.classList.add('show');
   adminOverlay.setAttribute('aria-hidden','false');
-  adminLogin.style.display = 'block';
-  adminPanel.style.display = 'none';
-  adminPassword.value = '';
   adminError.textContent = '';
   adminSaved.textContent = '';
-  setTimeout(() => adminPassword.focus(), 50);
+  if(auth.currentUser || localOnlyMode){
+    openPanel();
+  }else{
+    adminLogin.style.display = 'block';
+    adminPanel.style.display = 'none';
+    adminPassword.value = '';
+    setTimeout(() => adminPassword.focus(), 50);
+  }
 }
 
 function closeAdmin(){
@@ -617,49 +795,108 @@ function closeAdmin(){
 
 adminOpenBtn.addEventListener('click', openAdmin);
 adminCloseBtn.addEventListener('click', closeAdmin);
-
-adminOverlay.addEventListener('click', e => {
-  if(e.target === adminOverlay) closeAdmin();
-});
-
+adminOverlay.addEventListener('click', e => { if(e.target === adminOverlay) closeAdmin(); });
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && adminOverlay.classList.contains('show')) closeAdmin();
 });
 
-function loginAdmin(){
-  if(adminPassword.value === ADMIN_PASSWORD){
-    adminLogin.style.display = 'none';
-    adminPanel.style.display = 'block';
-    fillAdminForm(loadSiteTexts());
+/* ---- 로그인 / 로그아웃 ---- */
+async function loginAdmin(){
+  const pw = adminPassword.value;
+  if(!pw){ adminError.textContent = '비밀번호를 입력해주세요.'; return; }
+
+  adminError.textContent = '로그인 중입니다.';
+  try{
+    await signInWithEmailAndPassword(auth, ADMIN_EMAIL, pw);
     adminError.textContent = '';
-  }else{
-    adminError.textContent = '비밀번호가 올바르지 않습니다.';
-    adminPassword.select();
+    openPanel();
+  }catch(err){
+    const code = err.code || '';
+    const needsSetup = [
+      'auth/configuration-not-found',
+      'auth/operation-not-allowed',
+      'auth/user-not-found',
+      'auth/invalid-credential',
+      'auth/invalid-email',
+      'auth/network-request-failed'
+    ].includes(code);
+
+    if(needsSetup && pw === FALLBACK_PASSWORD){
+      // Firebase Authentication 설정 전에도 관리자 화면을 열 수 있게 하는 임시 모드
+      localOnlyMode = true;
+      adminError.textContent = '';
+      openPanel();
+      setStatus('offline', '임시 모드입니다. 저장 내용이 이 브라우저에만 남습니다.');
+      return;
+    }
+    if(code === 'auth/wrong-password' || code === 'auth/invalid-credential'){
+      adminError.textContent = '비밀번호가 올바르지 않습니다.';
+      adminPassword.select();
+      return;
+    }
+    adminError.textContent = `로그인에 실패했습니다. (${code || '알 수 없는 오류'})`;
   }
 }
 
 adminLoginBtn.addEventListener('click', loginAdmin);
-adminPassword.addEventListener('keydown', e => {
-  if(e.key === 'Enter') loginAdmin();
+adminPassword.addEventListener('keydown', e => { if(e.key === 'Enter') loginAdmin(); });
+
+adminLogoutBtn.addEventListener('click', async () => {
+  try{ await signOut(auth); }catch(e){}
+  localOnlyMode = false;
+  adminPanel.style.display = 'none';
+  adminLogin.style.display = 'block';
+  adminPassword.value = '';
+  adminSaved.textContent = '';
+  adminError.textContent = '';
 });
 
-document.getElementById('adminSaveBtn').addEventListener('click', () => {
+onAuthStateChanged(auth, user => {
+  if(user){
+    localOnlyMode = false;
+    if(adminOverlay.classList.contains('show')) openPanel();
+  }
+});
+
+/* ---- 저장 / 복원 ---- */
+document.getElementById('adminSaveBtn').addEventListener('click', async () => {
   const values = readAdminForm();
-  localStorage.setItem(ADMIN_STORAGE_KEY, JSON.stringify(values));
+  currentTexts = values;
+  cacheTexts(values);
   applySiteTexts(values);
-  adminSaved.textContent = '저장되었습니다. 현재 브라우저에 즉시 반영되었습니다.';
+
+  if(!auth.currentUser){
+    adminSaved.textContent = '이 브라우저에만 저장했습니다. 모든 방문자에게 적용하려면 관리자 계정으로 로그인해주세요.';
+    return;
+  }
+  adminSaved.textContent = '저장 중입니다.';
+  try{
+    await setDoc(TEXTS_DOC, {...values, updatedAt: serverTimestamp()}, {merge:true});
+    adminSaved.textContent = '저장했습니다. 모든 방문자 화면에 바로 반영됩니다.';
+  }catch(e){
+    adminSaved.textContent = `클라우드에 저장하지 못했습니다. (${e.code || e.message})`;
+  }
 });
 
-document.getElementById('adminResetBtn').addEventListener('click', () => {
+document.getElementById('adminResetBtn').addEventListener('click', async () => {
   if(!confirm('모든 문구를 기본값으로 복원할까요?')) return;
-  localStorage.removeItem(ADMIN_STORAGE_KEY);
   const values = {...defaultSiteTexts};
+  currentTexts = values;
+  cacheTexts(values);
   fillAdminForm(values);
   applySiteTexts(values);
-  adminSaved.textContent = '기본 문구로 복원되었습니다.';
-});
 
-applySiteTexts(loadSiteTexts());
+  if(!auth.currentUser){
+    adminSaved.textContent = '이 브라우저의 문구를 기본값으로 되돌렸습니다.';
+    return;
+  }
+  try{
+    await setDoc(TEXTS_DOC, {...values, updatedAt: serverTimestamp()}, {merge:true});
+    adminSaved.textContent = '기본 문구로 복원했습니다.';
+  }catch(e){
+    adminSaved.textContent = `클라우드에 저장하지 못했습니다. (${e.code || e.message})`;
+  }
+});
 
 </script>
 </body>
