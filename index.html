@@ -2,7 +2,6 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta name="naver-site-verification" content="66e67aadd9d2b5458f015a40ac6f0559f21ffe2d" />
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>도화연청 · 사주</title>
@@ -47,6 +46,29 @@
     letter-spacing:8px;
   }
   .subtitle{font-size:14px;color:#927e78;letter-spacing:2px}
+  .hero-video{
+    position:relative;
+    margin:26px auto 0;
+    max-width:760px;
+    aspect-ratio:16/7;
+    border-radius:22px;
+    overflow:hidden;
+    border:1px solid var(--line);
+    box-shadow:0 16px 40px rgba(129,94,87,.12);
+    background:var(--pink-soft);
+  }
+  .hero-video video{
+    width:100%;height:100%;
+    object-fit:cover;display:block;
+    pointer-events:none;
+  }
+  .hero-video:after{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg,rgba(255,250,243,.18),rgba(255,250,243,0) 40%,rgba(255,250,243,.30));
+  }
+  @media(max-width:700px){
+    .hero-video{aspect-ratio:16/9;border-radius:18px;margin-top:20px}
+  }
   .card{
     position:relative;
     overflow:hidden;
@@ -206,6 +228,16 @@
     <div class="ornament">✦　❀　✦</div>
     <h1>도화연청</h1>
     <div class="subtitle">당신의 시간을 읽고, 마음의 결을 살피다</div>
+
+    <div class="hero-video">
+      <video id="heroVideo"
+             src="dohwa-hero.mp4"
+             poster="dohwa-hero-poster.jpg"
+             autoplay loop muted playsinline
+             preload="auto"
+             disablepictureinpicture
+             aria-hidden="true"></video>
+    </div>
   </header>
 
   <main class="card">
@@ -429,6 +461,20 @@ isSupported().then(ok => { if(ok) getAnalytics(app); }).catch(() => {});
 const TEXTS_DOC   = doc(db, 'site', 'texts');   // 사이트 문구 1개 문서
 const LOGS_COL    = collection(db, 'logs');     // 풀이 실행 기록
 const ADMIN_EMAIL = 'admin@dohwayeoncheong.com';// 콘솔에서 만든 관리자 계정
+
+/* 헤더 영상: 자동 재생 보정 (모바일 절전 모드 등에서 막힐 때 대비) */
+const heroVideo = document.getElementById('heroVideo');
+if(heroVideo){
+  if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    heroVideo.removeAttribute('autoplay');
+    heroVideo.pause();
+  }else{
+    const playHero = () => heroVideo.play().catch(() => {});
+    playHero();
+    document.addEventListener('visibilitychange', () => { if(!document.hidden) playHero(); });
+    document.addEventListener('click', playHero, {once:true});
+  }
+}
 
 const form = document.getElementById('sajuForm');
 const result = document.getElementById('result');
